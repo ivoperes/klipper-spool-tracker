@@ -45,8 +45,10 @@ yours is old).
 ## Updating
 
 New versions show up in Mainsail/Fluidd under **Settings → Update Manager**
-(Machine → Update Manager in Fluidd). Click **Update** and Klipper and
-KlipperScreen restart automatically.
+(Machine → Update Manager in Fluidd). Click **Update** and Klipper restarts
+automatically. If the update changes the screen indicator, also restart
+KlipperScreen (Moonraker doesn't allow the update manager to restart it for
+another repository).
 
 Without the update manager:
 

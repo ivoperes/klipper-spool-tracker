@@ -9,4 +9,6 @@ channel: dev
 path: ~/spool_tracker
 origin: https://github.com/ivoperes/klipper-spool-tracker.git
 primary_branch: main
-managed_services: klipper KlipperScreen
+# Moonraker only allows klipper/moonraker here (KlipperScreen is rejected), so
+# restart KlipperScreen yourself if an update changes the screen indicator.
+managed_services: klipper
