@@ -337,6 +337,46 @@ class TestLoadAndTrack(Base):
         self.assertAlmostEqual(self.t.state["remaining_mm"],
                                cap - 34530., 3)
 
+    def test_retraction_is_not_a_new_print(self):
+        # filament_used drops on retraction (END_PRINT's G1 E-5); that must
+        # not be mistaken for a reset and the print counted twice.
+        self.load(100)
+        cap = self.t.state["capacity_mm"]
+        self.ps.state = "printing"
+        self.ps.filename = "a.gcode"
+        for used in (100., 243.66, 238.66, 243.66, 238.66):
+            self.ps.filament_used = used
+            self.poll()
+        self.assertAlmostEqual(self.t.state["remaining_mm"], cap - 238.66, 3)
+        self.assertAlmostEqual(self.t.state["used_since_load_mm"], 238.66, 3)
+        self.assertEqual(self.t.state["last_print"]["used_mm"], 238.66)
+        # reprint of the same file: the reset event starts a new count
+        self.printer.send_event("virtual_sdcard:reset_file")
+        self.ps.filament_used = 0.
+        self.poll()
+        self.ps.filament_used = 238.66
+        self.poll()
+        self.assertAlmostEqual(self.t.state["remaining_mm"], cap - 477.32, 3)
+        self.assertEqual(self.t.state["last_print"]["used_mm"], 238.66)
+        # a different file is a new print even if the event was missed
+        self.ps.filename = "b.gcode"
+        self.ps.filament_used = 10.
+        self.poll()
+        self.assertAlmostEqual(self.t.state["remaining_mm"], cap - 487.32, 3)
+        self.assertEqual(self.t.state["last_print"]["file"], "b.gcode")
+
+    def test_restart_does_not_recount_last_print(self):
+        self.load(100)
+        cap = self.t.state["capacity_mm"]
+        self.ps.state = "complete"
+        self.ps.filename = "a.gcode"
+        self.ps.filament_used = 238.66
+        self.poll()
+        self.t._save_state()
+        self.make_tracker()
+        self.poll()
+        self.assertAlmostEqual(self.t.state["remaining_mm"], cap - 238.66, 3)
+
     def test_low_warning_once(self):
         self.load(12)
         self.ps.state = "printing"

@@ -180,6 +180,8 @@ class SpoolTracker:
         self.v_sd = None
         self.orig_print_file = None
         self.last_used = 0.
+        self.last_file = ""
+        self.new_print = False
         self.dirty = False
         self.last_save = 0.
         self.low_warned = False
@@ -346,14 +348,16 @@ class SpoolTracker:
     def _handle_ready(self):
         if self.print_stats is not None:
             eventtime = self.reactor.monotonic()
-            self.last_used = self.print_stats.get_status(
-                eventtime)["filament_used"]
+            stats = self.print_stats.get_status(eventtime)
+            self.last_used = stats["filament_used"]
+            self.last_file = stats.get("filename") or ""
         self.poll_timer = self.reactor.register_timer(
             self._poll, self.reactor.NOW)
 
     def _handle_reset_file(self):
         # print_stats has just been reset for a new file
         self.last_used = 0.
+        self.new_print = True
 
     def _poll(self, eventtime):
         # An exception escaping a reactor timer shuts Klipper down, possibly
@@ -371,16 +375,24 @@ class SpoolTracker:
         used = stats.get("filament_used")
         if not is_number(used):
             return
-        if used < self.last_used - 1.:
-            # Counter was reset (new print) without us seeing the event
+        fname = stats.get("filename") or ""
+        new_print = self.new_print
+        if fname != self.last_file:
+            # A different file was loaded, so print_stats was reset even if
+            # we did not see the event. Same-file reprints rely on the event.
+            # A drop in filament_used is NOT a reset: it goes down on every
+            # retraction (e.g. the end-of-print retract) and coming back
+            # from it must not count the whole print a second time.
             self.last_used = 0.
+            new_print = True
+        self.last_file = fname
         delta = used - self.last_used
         self.last_used = used
         if abs(delta) < 1e-6:
             return
-        fname = stats.get("filename") or ""
+        self.new_print = False
         lp = self.state.get("last_print")
-        if not lp or lp.get("file") != fname or used < lp.get("used_mm", 0.):
+        if not lp or new_print or lp.get("file") != fname:
             lp = {"file": fname, "used_mm": 0., "time": time.time()}
         lp["used_mm"] = used
         self.state["last_print"] = lp
