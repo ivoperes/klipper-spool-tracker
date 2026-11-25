@@ -9,7 +9,10 @@
 # Install: copy or symlink into ~/klipper/klippy/extras/ and add a
 # [spool_tracker] section to printer.cfg (see spool_tracker.cfg).
 #
+# Copyright (C) 2026  ivoperes (https://github.com/ivoperes)
+#
 # This file may be distributed under the terms of the GNU GPLv3 license.
+# See the LICENSE file in the repository root.
 import json
 import logging
 import math

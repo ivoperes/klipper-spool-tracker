@@ -18,56 +18,55 @@ Keeps a running estimate of how much filament is left on the loaded spool.
 The dialogs use Klipper's built-in prompts, so they also show up in Mainsail and
 Fluidd.
 
-## Files
+## Install (on the printer's Pi)
 
-| File | Goes to |
-|---|---|
-| `klipper/spool_tracker.py` | `~/klipper/klippy/extras/` (symlinked by installer) |
-| `klipper/spool_tracker.cfg` | `~/printer_data/config/` (options, all optional) |
-| `klipperscreen/spool_indicator.py` | `~/KlipperScreen/ks_includes/` (symlinked) |
-| `klipperscreen/KlipperScreen.conf.snippet` | paste into `KlipperScreen.conf` |
-| `install.sh` | run on the printer's Pi |
-| `tests/` | off-printer tests (`python -m unittest discover -s tests`) |
+SSH into the Pi (e.g. `ssh biqu@<printer-ip>`; the user is often `pi` or
+`biqu`), then:
 
-## Install (on the Pi)
-
-SSH into the printer's Pi, then:
-
-1. **Sign the Pi in to GitHub (once).** This repo is private, so the Pi needs
-   its own sign-in to download it:
+1. **Download and install:**
    ```bash
-   sudo apt update && sudo apt install -y gh
-   gh auth login
-   ```
-   Choose **GitHub.com → HTTPS → Yes (authenticate Git) → Login with a web
-   browser**. It shows a code; open https://github.com/login/device on your PC,
-   enter the code and approve.
-2. **Download and install:**
-   ```bash
-   gh repo clone ivoperes/klipper-spool-tracker ~/spool_tracker
+   git clone https://github.com/ivoperes/klipper-spool-tracker.git ~/spool_tracker
    cd ~/spool_tracker && ./install.sh
    ```
-3. Add `[include spool_tracker.cfg]` to `printer.cfg`.
-4. Paste `klipperscreen/KlipperScreen.conf.snippet` into `KlipperScreen.conf`
-   (adds a **Spool** button to the main menu).
-5. `sudo systemctl restart klipper KlipperScreen`
+2. Add `[include spool_tracker.cfg]` to `printer.cfg`.
+3. Paste [`klipperscreen/KlipperScreen.conf.snippet`](klipperscreen/KlipperScreen.conf.snippet)
+   into `KlipperScreen.conf` (adds a **Spool** button to the main menu).
+4. Paste [`moonraker/update_manager.conf.snippet`](moonraker/update_manager.conf.snippet)
+   into `moonraker.conf` (adds Spool Tracker to Mainsail/Fluidd's update manager).
+5. Restart: `sudo systemctl restart moonraker klipper KlipperScreen`
 6. Tap **Spool** and load your current spool.
 
+Steps 2 to 4 can also be done in Mainsail/Fluidd's config editor.
+
 Needs `[virtual_sdcard]` (standard with Moonraker) and an up-to-date
-KlipperScreen (one that shows macro `action:prompt` dialogs; update it first if yours is old).
+KlipperScreen (one that shows macro `action:prompt` dialogs; update it first if
+yours is old).
 
 ## Updating
 
-The installer links Klipper and KlipperScreen to the files in
-`~/spool_tracker`, so getting a new version is just:
+New versions show up in Mainsail/Fluidd under **Settings → Update Manager**
+(Machine → Update Manager in Fluidd). Click **Update** and Klipper and
+KlipperScreen restart automatically.
+
+Without the update manager:
 
 ```bash
-cd ~/spool_tracker && git pull && ./install.sh
-sudo systemctl restart klipper KlipperScreen
+cd ~/spool_tracker && git pull && sudo systemctl restart klipper KlipperScreen
 ```
 
-Your spool data (`spool_tracker.json`) and `spool_tracker.cfg` settings are
-kept.
+Your spool data (`spool_tracker.json`) and `spool_tracker.cfg` settings are kept.
+
+## Files
+
+| File | What it is |
+|---|---|
+| `klipper/spool_tracker.py` | Klipper module (linked into `~/klipper/klippy/extras/` by the installer) |
+| `klipper/spool_tracker.cfg` | Options, all optional (copied to `~/printer_data/config/`) |
+| `klipperscreen/spool_indicator.py` | Title bar indicator (linked into `~/KlipperScreen/ks_includes/`) |
+| `klipperscreen/KlipperScreen.conf.snippet` | Main-menu **Spool** button |
+| `moonraker/update_manager.conf.snippet` | Update manager entry |
+| `install.sh` | Installer (`./install.sh uninstall` removes it) |
+| `tests/` | Off-printer tests: `python -m unittest discover -s tests` |
 
 ## Commands
 
@@ -94,7 +93,47 @@ Status is available to macros and UIs as `printer.spool_tracker`
   print starts normally and the console says the check was skipped.
 - **KlipperScreen updates:** the indicator needs a small hook in
   `panels/base_panel.py`, so Moonraker's update manager will show KlipperScreen
-  as modified. Run `./install.sh uninstall` before updating, then `./install.sh`
-  again afterwards. The Klipper module isn't affected by Klipper updates.
+  as modified. Run `~/spool_tracker/install.sh uninstall` before updating
+  KlipperScreen, then `~/spool_tracker/install.sh` again afterwards.
 - Densities, spool sizes, margin and the low-warning level can all be changed in
   `spool_tracker.cfg`.
+
+## License
+
+Copyright (C) 2026 ivoperes.
+
+- Everything in this repository is licensed under the
+  [GNU General Public License v3.0](LICENSE), the same license as Klipper,
+  **except** the `klipperscreen/` folder.
+- `klipperscreen/` is licensed under the
+  [GNU Affero General Public License v3.0](klipperscreen/LICENSE), the same
+  license as KlipperScreen, because it runs inside KlipperScreen.
+
+You may use, change and share this software under those licenses. Anyone who
+distributes it, or a modified version, must also make their source code
+available under the same license. There is no warranty.
+
+## Acknowledgements
+
+This add-on builds on, and only works because of, these projects:
+
+- **[Klipper](https://github.com/Klipper3d/klipper)** by Kevin O'Connor and
+  contributors (GPLv3). Spool Tracker is a Klipper module and uses its
+  module API, `print_stats` (filament used per print), `virtual_sdcard`
+  (print start), and its G-code command and status systems.
+- **[KlipperScreen](https://github.com/KlipperScreen/KlipperScreen)**, started
+  by Jordan Ruthe and maintained by Alfredo Monclus and contributors (AGPLv3).
+  The indicator plugs into its title bar (`panels/base_panel.py`), reuses its
+  spool icon and low-filament style, and the dialogs rely on its support for
+  Klipper prompts.
+- **[Moonraker](https://github.com/Arksine/moonraker)** by Eric Callahan
+  (Arksine) and contributors (GPLv3). It carries the status and commands
+  between Klipper and the screens, and provides the update manager.
+- **[Mainsail](https://github.com/mainsail-crew/mainsail)** and
+  **[Fluidd](https://github.com/fluidd-core/fluidd)** teams, for the
+  `action:prompt` dialog convention used for all on-screen questions.
+- Filament densities are typical manufacturer values for each material.
+
+No code from these projects is copied into this repository. The installer adds
+a short hook (six lines) to your local copy of KlipperScreen's
+`panels/base_panel.py` and removes it again on uninstall.

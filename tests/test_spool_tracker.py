@@ -1,6 +1,9 @@
 """Off-printer tests for klipper/spool_tracker.py using fake Klipper objects.
 
 Run:  python -m unittest discover -s tests -v
+
+Copyright (C) 2026  ivoperes (https://github.com/ivoperes)
+This file may be distributed under the terms of the GNU GPLv3 license.
 """
 import math
 import os

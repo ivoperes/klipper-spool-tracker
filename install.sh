@@ -2,6 +2,9 @@
 # Spool tracker installer for Klipper + KlipperScreen.
 #   ./install.sh            install / re-install (safe to run again)
 #   ./install.sh uninstall  remove the KlipperScreen hook and symlinks
+#
+# Copyright (C) 2026  ivoperes (https://github.com/ivoperes)
+# This file may be distributed under the terms of the GNU GPLv3 license.
 set -e
 
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -93,8 +96,10 @@ Done. Remaining steps:
  1. Add this line to printer.cfg:   [include spool_tracker.cfg]
  2. Add the menu button from klipperscreen/KlipperScreen.conf.snippet
     to $CONFIG_DIR/KlipperScreen.conf
- 3. Restart:   sudo systemctl restart klipper KlipperScreen
- 4. Tap "Spool" (or the % in the title bar) to load your first spool.
+ 3. Optional, for updates from Mainsail/Fluidd: add the section from
+    moonraker/update_manager.conf.snippet to $CONFIG_DIR/moonraker.conf
+ 4. Restart:   sudo systemctl restart moonraker klipper KlipperScreen
+ 5. Tap "Spool" (or the % in the title bar) to load your first spool.
 
 After a KlipperScreen update, run ./install.sh again to restore the indicator.
 EOF

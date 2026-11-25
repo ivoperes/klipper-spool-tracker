@@ -1,0 +1,12 @@
+# Add to ~/printer_data/config/moonraker.conf, then restart Moonraker:
+#   sudo systemctl restart moonraker
+# Spool Tracker then shows up in Mainsail/Fluidd's update manager next to
+# Klipper and KlipperScreen.
+
+[update_manager spool_tracker]
+type: git_repo
+channel: dev
+path: ~/spool_tracker
+origin: https://github.com/ivoperes/klipper-spool-tracker.git
+primary_branch: main
+managed_services: klipper KlipperScreen

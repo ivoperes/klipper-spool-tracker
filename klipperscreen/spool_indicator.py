@@ -5,6 +5,12 @@
 #
 # Installed into ~/KlipperScreen/ks_includes/ and hooked into
 # panels/base_panel.py by install.sh.
+#
+# Copyright (C) 2026  ivoperes (https://github.com/ivoperes)
+#
+# This file is part of an add-on for KlipperScreen and, like KlipperScreen,
+# may be distributed under the terms of the GNU AGPLv3 license.
+# See klipperscreen/LICENSE.
 import logging
 
 import gi
