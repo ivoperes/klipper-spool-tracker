@@ -1,0 +1,10 @@
+# Python
+__pycache__/
+*.pyc
+
+# Runtime state written by the tracker on the printer
+spool_tracker.json
+spool_tracker.json.tmp
+
+# Local Claude Code settings
+.claude/settings.local.json

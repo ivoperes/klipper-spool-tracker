@@ -1,0 +1,9 @@
+# Add to ~/printer_data/config/KlipperScreen.conf
+# (above the "#~# --- Do not edit below this line" block, if there is one)
+
+# "Spool" button on the main menu
+[menu __main spool]
+name: Spool
+icon: spool
+method: printer.gcode.script
+params: {"script": "SPOOL_SWITCH"}
