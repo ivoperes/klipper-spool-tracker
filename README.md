@@ -31,11 +31,21 @@ Fluidd.
 
 ## Install (on the Pi)
 
-1. Copy this folder to the Pi, e.g. `~/spool_tracker` (WinSCP, or
-   `scp -r "D:\Claude\3D Printer Klipper" pi@<printer-ip>:~/spool_tracker`).
-2. Run:
+SSH into the printer's Pi, then:
+
+1. **Sign the Pi in to GitHub (once).** This repo is private, so the Pi needs
+   its own sign-in to download it:
    ```bash
-   cd ~/spool_tracker && chmod +x install.sh && ./install.sh
+   sudo apt update && sudo apt install -y gh
+   gh auth login
+   ```
+   Choose **GitHub.com → HTTPS → Yes (authenticate Git) → Login with a web
+   browser**. It shows a code; open https://github.com/login/device on your PC,
+   enter the code and approve.
+2. **Download and install:**
+   ```bash
+   gh repo clone ivoperes/klipper-spool-tracker ~/spool_tracker
+   cd ~/spool_tracker && ./install.sh
    ```
 3. Add `[include spool_tracker.cfg]` to `printer.cfg`.
 4. Paste `klipperscreen/KlipperScreen.conf.snippet` into `KlipperScreen.conf`
@@ -45,6 +55,19 @@ Fluidd.
 
 Needs `[virtual_sdcard]` (standard with Moonraker) and an up-to-date
 KlipperScreen (one that shows macro `action:prompt` dialogs; update it first if yours is old).
+
+## Updating
+
+The installer links Klipper and KlipperScreen to the files in
+`~/spool_tracker`, so getting a new version is just:
+
+```bash
+cd ~/spool_tracker && git pull && ./install.sh
+sudo systemctl restart klipper KlipperScreen
+```
+
+Your spool data (`spool_tracker.json`) and `spool_tracker.cfg` settings are
+kept.
 
 ## Commands
 
