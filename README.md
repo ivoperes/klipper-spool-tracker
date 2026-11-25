@@ -67,6 +67,7 @@ Your spool data (`spool_tracker.json`) and `spool_tracker.cfg` settings are kept
 | `moonraker/update_manager.conf.snippet` | Update manager entry |
 | `install.sh` | Installer (`./install.sh uninstall` removes it) |
 | `tests/` | Off-printer tests: `python -m unittest discover -s tests` |
+| `docs/DEVELOPER_NOTES.md` | Design, internals, security review |
 
 ## Commands
 
@@ -97,6 +98,14 @@ Status is available to macros and UIs as `printer.spool_tracker`
   KlipperScreen, then `~/spool_tracker/install.sh` again afterwards.
 - Densities, spool sizes, margin and the low-warning level can all be changed in
   `spool_tracker.cfg`.
+
+## Security and development
+
+- [SECURITY.md](SECURITY.md): how to report a vulnerability, and how to keep
+  your printer's web interface safe.
+- [docs/DEVELOPER_NOTES.md](docs/DEVELOPER_NOTES.md): how it works, the
+  Klipper/KlipperScreen internals it relies on, the OWASP security review, and
+  the coding rules for contributors.
 
 ## License
 
@@ -135,5 +144,6 @@ This add-on builds on, and only works because of, these projects:
 - Filament densities are typical manufacturer values for each material.
 
 No code from these projects is copied into this repository. The installer adds
-a short hook (six lines) to your local copy of KlipperScreen's
-`panels/base_panel.py` and removes it again on uninstall.
+a short, clearly marked hook to your local copy of KlipperScreen's
+`panels/base_panel.py` (keeping a `.spool_tracker.bak` backup) and removes it
+again on uninstall.

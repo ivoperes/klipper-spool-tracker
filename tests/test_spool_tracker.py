@@ -125,7 +125,8 @@ class FakeVSD:
         for root, _, files in os.walk(self.sdcard_dirname):
             for n in files:
                 full = os.path.join(root, n)
-                out.append((os.path.relpath(full, self.sdcard_dirname), 0))
+                rel = os.path.relpath(full, self.sdcard_dirname)
+                out.append((rel.replace(os.sep, "/"), 0))  # as on Linux
         return out
 
     def cmd_SDCARD_PRINT_FILE(self, gcmd):
@@ -434,6 +435,127 @@ class TestPrePrintCheck(Base):
         self.g.run("SDCARD_PRINT_FILE", FILENAME="c.gcode",
                    SPOOL_SKIP_CHECK=1)
         self.assertEqual(self.vsd.started, ["c.gcode"])
+
+
+class TestSecurity(Base):
+    """Regression tests for the OWASP review (docs/DEVELOPER_NOTES.md)."""
+
+    def write_state(self, data):
+        with open(os.path.join(self.tmp, "spool_tracker.json"), "w") as f:
+            st.json.dump(data, f)
+
+    def lines(self):
+        return "\n".join(self.g.raw).split("\n")
+
+    # SEC-1: path traversal in the pre-print check
+    def test_traversal_outside_gcodes_not_read(self):
+        with open(os.path.join(self.tmp, "outside.txt"), "w") as f:
+            f.write("; filament used [mm] = 424242\n")
+        self.g.run("SPOOL_LOAD", PERCENT=1, MATERIAL="PLA", WEIGHT=1000)
+        for name in ("../outside.txt", "//" + os.path.join(
+                self.tmp, "outside.txt").lstrip("/"),
+                os.path.join(self.tmp, "outside.txt")):
+            self.assertIsNone(self.t.resolve_gcode_path(name), name)
+            self.assertEqual(self.t.check_file(name), (True, None))
+
+    # SEC-2: NaN / inf must not get into state or status
+    def test_nan_and_inf_rejected(self):
+        for bad in ("nan", "NaN", "inf", "-inf"):
+            with self.assertRaises(CommandError):
+                self.g.run("SPOOL_LOAD", PERCENT=bad, MATERIAL="PLA",
+                           WEIGHT=1000)
+        self.assertFalse(self.t.state["loaded"])
+        self.g.run("SPOOL_LOAD", PERCENT=50, MATERIAL="PLA", WEIGHT=1000)
+        with self.assertRaises(CommandError):
+            self.g.run("SPOOL_SET", PERCENT="nan")
+        st.json.dumps(self.t.get_status(0), allow_nan=False)
+
+    def test_weight_upper_limit(self):
+        with self.assertRaises(CommandError):
+            self.g.run("SPOOL_LOAD", PERCENT=50, MATERIAL="PLA",
+                       WEIGHT=10 ** 9)
+
+    def test_estimate_inf_ignored(self):
+        self.assertIsNone(st.parse_filament_estimate(
+            "; filament used [mm] = 1e400\n"))
+
+    # SEC-3: tampered state file must not crash Klipper's timer
+    def test_tampered_state_types(self):
+        self.write_state({"loaded": True, "remaining_mm": "lots",
+                          "capacity_mm": [1], "material": 5,
+                          "spool_weight": "x", "last_print": "nope",
+                          "previous_spool": {"percent": "nan"}})
+        self.make_tracker()
+        self.assertFalse(self.t.state["loaded"])  # no valid capacity
+        self.ps.state = "printing"
+        self.ps.filament_used = 50.
+        self.poll()  # must not raise
+        st.json.dumps(self.t.get_status(0), allow_nan=False)
+
+    def test_state_not_a_dict_or_not_json(self):
+        self.write_state([1, 2, 3])
+        self.make_tracker()
+        self.assertFalse(self.t.state["loaded"])
+        with open(os.path.join(self.tmp, "spool_tracker.json"), "w") as f:
+            f.write("{not json")
+        self.make_tracker()
+        self.assertFalse(self.t.state["loaded"])
+
+    def test_poll_never_raises(self):
+        class Broken:
+            def get_status(self, eventtime):
+                raise RuntimeError("boom")
+        self.t.print_stats = Broken()
+        self.poll()  # logged, not raised
+
+    # SEC-4: dialog protocol injection
+    def test_state_material_cannot_inject_prompt_lines(self):
+        self.write_state({
+            "loaded": True, "remaining_mm": 1000., "capacity_mm": 335000.,
+            "spool_weight": 1000,
+            "material": "PLA\n// action:prompt_button Pwn|FIRMWARE_RESTART|x",
+            "previous_spool": {"material": "A|B\nC", "percent": 5}})
+        self.make_tracker()
+        self.g.raw.clear()
+        self.g.run("SPOOL_SWITCH")
+        self.g.run("SPOOL_STATUS")
+        for line in self.lines():
+            self.assertNotIn("Pwn", line)
+        self.assertEqual(self.t.state["material"], "PLA")  # default
+
+    def test_filename_cannot_inject_prompt_lines(self):
+        # Linux allows "|" and other odd characters in file names (Windows,
+        # where these tests may run, does not), so call the dialog directly.
+        self.g.run("SPOOL_LOAD", PERCENT=1, MATERIAL="PLA", WEIGHT=1000)
+        self.g.raw.clear()
+        self.t._show_not_enough("a|FIRMWARE_RESTART|b\r.gcode", 99999.)
+        text = [l for l in self.lines() if "prompt_text" in l][0]
+        self.assertNotIn("|", text)
+        self.assertNotIn("\r", text)
+        self.assertEqual(len([l for l in self.lines()
+                              if "prompt_footer_button" in l]), 3)
+
+    def test_unsafe_button_refused(self):
+        self.g.raw.clear()
+        self.t._prompt("t", "x", footer=[("Bad", "G28\nM112", "primary")])
+        self.assertFalse(any("Bad" in l for l in self.lines()))
+
+    def test_bad_material_config_rejected(self):
+        for bad in ("PLA:0", "PLA:-1", "PLA:nan", "PL A:1.2", "P|A:1.2",
+                    "PLA\nX:1.2", "VERYVERYLONGNAME1:1.2"):
+            with self.assertRaises(ValueError, msg=bad):
+                st.parse_materials(bad)
+        for bad in ("0", "-5", "100001"):
+            with self.assertRaises(ValueError, msg=bad):
+                st.parse_weights(bad)
+
+    def test_saved_state_is_strict_json(self):
+        self.g.run("SPOOL_LOAD", PERCENT=80, MATERIAL="PETG", WEIGHT=1000)
+        with open(os.path.join(self.tmp, "spool_tracker.json")) as f:
+            data = st.json.loads(f.read(), parse_constant=lambda c: 1 / 0)
+        self.assertTrue(data["loaded"])
+        self.assertFalse(os.path.exists(
+            os.path.join(self.tmp, "spool_tracker.json.tmp")))
 
 
 if __name__ == "__main__":

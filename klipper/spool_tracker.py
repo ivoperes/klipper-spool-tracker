@@ -13,6 +13,13 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 # See the LICENSE file in the repository root.
+#
+# Security notes (see docs/DEVELOPER_NOTES.md for the full threat model):
+# - Every value that reaches a G-code parameter, a dialog line or the state
+#   file is validated here; nothing trusts the state file or slicer output.
+# - Files are only read if virtual_sdcard itself would print them.
+# - Nothing in the polling timer may raise: an exception in a Klipper timer
+#   shuts the printer down.
 import json
 import logging
 import math
@@ -27,6 +34,26 @@ PERCENT_STEPS = list(range(100, 0, -5))   # 100, 95, ... 5
 
 HEAD_BYTES = 64 * 1024
 TAIL_BYTES = 512 * 1024
+
+# Input limits
+MAX_SPOOL_WEIGHT = 100000          # grams (100 kg)
+MAX_DENSITY = 25.                  # g/cm3, far above any filament
+MAX_LENGTH_MM = 1e8                # 100 km; anything larger is corrupt data
+MAX_TEXT = 200                     # characters shown in a dialog line
+MATERIAL_RE = re.compile(r"^[A-Z0-9_+\-]{1,16}$")
+# Characters that would break the line-based "// action:prompt_*" protocol:
+# control characters (incl. CR/LF) and the "|" field separator.
+UNSAFE_TEXT_RE = re.compile(r"[\x00-\x1f\x7f|]")
+
+
+def clean_text(value, limit=MAX_TEXT):
+    """Make a value safe to show in a prompt line (output encoding)."""
+    return UNSAFE_TEXT_RE.sub(" ", str(value))[:limit]
+
+
+def is_number(value):
+    return (isinstance(value, (int, float)) and not isinstance(value, bool)
+            and math.isfinite(value))
 
 # Slicer comments holding the total filament length.  Each entry is
 # (regex, multiplier-to-mm, multi) where multi means the line holds one
@@ -60,7 +87,8 @@ def parse_filament_estimate(text):
             values = values[:1]
         if values:
             total = sum(v for v in values if v > 0.) * scale
-            if total > 0.:
+            # Reject inf/absurd values from malformed or hostile files
+            if 0. < total <= MAX_LENGTH_MM:
                 return total
     return None
 
@@ -89,12 +117,24 @@ def parse_materials(text):
             continue
         name, _, dens = item.partition(":")
         name = name.strip().upper()
-        if not name or " " in name or "|" in name:
-            raise ValueError("Invalid material name '%s'" % (name,))
-        materials.append((name, float(dens)))
+        # Names end up inside G-code commands, so allow-list the characters
+        if not MATERIAL_RE.match(name):
+            raise ValueError("Invalid material name '%s' (use A-Z, 0-9, "
+                             "_ + -, max 16 characters)" % (clean_text(name),))
+        density = float(dens)
+        if not (math.isfinite(density) and 0. < density <= MAX_DENSITY):
+            raise ValueError("Invalid density for %s" % (name,))
+        materials.append((name, density))
     if not materials:
         raise ValueError("No materials configured")
     return materials
+
+
+def parse_weights(text):
+    weights = [int(float(w)) for w in text.split(",") if w.strip()]
+    if not weights or any(not 0 < w <= MAX_SPOOL_WEIGHT for w in weights):
+        raise ValueError("spool_weights must be 1-%d grams" % MAX_SPOOL_WEIGHT)
+    return weights
 
 
 class SpoolTracker:
@@ -108,8 +148,8 @@ class SpoolTracker:
         try:
             self.materials = parse_materials(
                 config.get("materials", DEFAULT_MATERIALS))
-            self.weights = [int(float(w)) for w in config.get(
-                "spool_weights", DEFAULT_WEIGHTS).split(",") if w.strip()]
+            self.weights = parse_weights(
+                config.get("spool_weights", DEFAULT_WEIGHTS))
         except ValueError as e:
             raise config.error("[%s] %s" % (self.name, e))
         self.densities = dict(self.materials)
@@ -119,8 +159,9 @@ class SpoolTracker:
             raise config.error("[%s] default_material %s is not in materials"
                                % (self.name, self.default_material))
         self.default_weight = config.getint("default_spool_weight", 1000,
-                                            minval=1)
-        self.safety_margin = config.getfloat("safety_margin", 5., minval=0.)
+                                            minval=1, maxval=MAX_SPOOL_WEIGHT)
+        self.safety_margin = config.getfloat("safety_margin", 5., minval=0.,
+                                             maxval=1000.)
         self.low_percent = config.getfloat("low_warning_percent", 10.,
                                            minval=0., maxval=100.)
         self.check_before_print = config.getboolean("check_before_print",
@@ -173,23 +214,79 @@ class SpoolTracker:
         try:
             with open(self.state_file, "r") as f:
                 data = json.load(f)
-            if isinstance(data, dict):
-                self.state.update(data)
         except (IOError, OSError):
-            pass
+            return   # first run: no state yet
         except ValueError:
-            logging.exception("spool_tracker: corrupt state file %s",
+            logging.exception("spool_tracker: corrupt state file %s, "
+                              "starting with no spool loaded",
                               self.state_file)
+            return
+        self.state = self.sanitize_state(data)
+
+    def sanitize_state(self, data):
+        """Rebuild state from untrusted JSON, keeping only valid fields.
+
+        The state file lives in the config folder and can be edited from
+        Mainsail/Fluidd, so it is treated like any other external input.
+        """
+        st = self._default_state()
+        if not isinstance(data, dict):
+            logging.warning("spool_tracker: ignoring state file (not a dict)")
+            return st
+
+        def num(src, key, lo, hi, default):
+            v = src.get(key, default)
+            return float(v) if is_number(v) and lo <= v <= hi else default
+
+        material = data.get("material")
+        if material in self.densities:
+            st["material"] = material
+        elif data.get("loaded"):
+            logging.warning("spool_tracker: unknown material in state file, "
+                            "using %s", self.default_material)
+        w = data.get("spool_weight")
+        if is_number(w) and 0 < w <= MAX_SPOOL_WEIGHT:
+            st["spool_weight"] = int(w)
+        st["capacity_mm"] = num(data, "capacity_mm", 0., MAX_LENGTH_MM, 0.)
+        st["remaining_mm"] = num(data, "remaining_mm", -MAX_LENGTH_MM,
+                                 MAX_LENGTH_MM, 0.)
+        st["loaded_percent"] = num(data, "loaded_percent", 0., 100., 0.)
+        st["used_since_load_mm"] = num(data, "used_since_load_mm",
+                                       -MAX_LENGTH_MM, MAX_LENGTH_MM, 0.)
+        st["loaded_at"] = num(data, "loaded_at", 0., 1e11, None)
+        st["loaded"] = data.get("loaded") is True and st["capacity_mm"] > 0.
+        lp = data.get("last_print")
+        if isinstance(lp, dict):
+            st["last_print"] = {
+                "file": clean_text(lp.get("file") or "", 255),
+                "used_mm": num(lp, "used_mm", 0., MAX_LENGTH_MM, 0.),
+                "time": num(lp, "time", 0., 1e11, None)}
+        prev = data.get("previous_spool")
+        if isinstance(prev, dict):
+            pw = prev.get("spool_weight")
+            st["previous_spool"] = {
+                "material": clean_text(prev.get("material") or "?", 16),
+                "spool_weight": int(pw) if is_number(pw)
+                and 0 < pw <= MAX_SPOOL_WEIGHT else 0,
+                "percent": num(prev, "percent", 0., 100., 0.),
+                "remaining_mm": num(prev, "remaining_mm", -MAX_LENGTH_MM,
+                                    MAX_LENGTH_MM, 0.),
+                "removed_at": num(prev, "removed_at", 0., 1e11, None)}
+        return st
 
     def _save_state(self, *args):
+        """Atomic, crash-safe write: temp file + fsync + rename."""
         tmp = self.state_file + ".tmp"
         try:
             with open(tmp, "w") as f:
-                json.dump(self.state, f, indent=2)
+                # allow_nan=False: never persist NaN/inf (invalid JSON)
+                json.dump(self.state, f, indent=2, allow_nan=False)
+                f.flush()
+                os.fsync(f.fileno())
             os.replace(tmp, self.state_file)
             self.dirty = False
             self.last_save = self.reactor.monotonic()
-        except (IOError, OSError):
+        except (IOError, OSError, ValueError, TypeError):
             logging.exception("spool_tracker: unable to save %s",
                               self.state_file)
 
@@ -259,14 +356,21 @@ class SpoolTracker:
         self.last_used = 0.
 
     def _poll(self, eventtime):
-        if self.print_stats is not None:
-            self.update_usage(self.print_stats.get_status(eventtime))
-        if self.dirty and eventtime - self.last_save >= self.save_interval:
-            self._save_state()
+        # An exception escaping a reactor timer shuts Klipper down, possibly
+        # mid-print. Tracking filament is never worth that: log and carry on.
+        try:
+            if self.print_stats is not None:
+                self.update_usage(self.print_stats.get_status(eventtime))
+            if self.dirty and eventtime - self.last_save >= self.save_interval:
+                self._save_state()
+        except Exception:
+            logging.exception("spool_tracker: error while tracking usage")
         return eventtime + 2.
 
     def update_usage(self, stats):
-        used = stats["filament_used"]
+        used = stats.get("filament_used")
+        if not is_number(used):
+            return
         if used < self.last_used - 1.:
             # Counter was reset (new print) without us seeing the event
             self.last_used = 0.
@@ -319,17 +423,27 @@ class SpoolTracker:
     def _respond(self, msg):
         self.gcode.respond_raw("// action:%s" % (msg,))
 
+    def _button(self, kind, label, cmd, style):
+        # The G-code behind a button is built only from validated values, so
+        # an unsafe character here means a bug: refuse rather than emit it.
+        if UNSAFE_TEXT_RE.search(cmd) or UNSAFE_TEXT_RE.search(style):
+            logging.error("spool_tracker: refusing unsafe button %r", cmd)
+            return
+        self._respond("%s %s|%s|%s" % (kind, clean_text(label, 40), cmd,
+                                       style))
+
     def _prompt(self, title, text, groups=(), footer=()):
-        self._respond("prompt_begin %s" % (title,))
-        self._respond("prompt_text %s" % (text,))
+        # Every line is one "// action:" message; clean_text() strips
+        # newlines and "|" so data can never add lines or buttons.
+        self._respond("prompt_begin %s" % (clean_text(title, 60),))
+        self._respond("prompt_text %s" % (clean_text(text, 400),))
         for group in groups:
             self._respond("prompt_button_group_start")
             for label, cmd, style in group:
-                self._respond("prompt_button %s|%s|%s" % (label, cmd, style))
+                self._button("prompt_button", label, cmd, style)
             self._respond("prompt_button_group_end")
         for label, cmd, style in footer:
-            self._respond("prompt_footer_button %s|%s|%s"
-                          % (label, cmd, style))
+            self._button("prompt_footer_button", label, cmd, style)
         self._respond("prompt_show")
 
     def _prompt_end(self):
@@ -349,22 +463,26 @@ class SpoolTracker:
     # ------------------------------------------------------------------
     # Pre-print check
     def resolve_gcode_path(self, filename):
+        """Map a FILENAME to a path, but only for files virtual_sdcard itself
+        would print (allow-list). Blocks "../" and absolute-path traversal.
+        """
         if self.v_sd is None:
             return None
         if filename.startswith("/"):
-            filename = filename[1:]
-        base = self.v_sd.sdcard_dirname
-        path = os.path.join(base, filename)
-        if os.path.isfile(path):
-            return path
-        # virtual_sdcard matches file names case-insensitively
+            filename = filename[1:]   # same rule as virtual_sdcard
         try:
-            for fname, _ in self.v_sd.get_file_list(check_subdirs=True):
-                if fname.lower() == filename.lower():
-                    return os.path.join(base, fname)
+            files = [f for f, _ in self.v_sd.get_file_list(
+                check_subdirs=True)]
         except Exception:
-            pass
-        return None
+            logging.exception("spool_tracker: unable to list gcode files")
+            return None
+        if filename not in files:
+            # virtual_sdcard matches file names case-insensitively
+            by_lower = {f.lower(): f for f in files}
+            filename = by_lower.get(filename.lower())
+            if filename is None:
+                return None
+        return os.path.join(self.v_sd.sdcard_dirname, filename)
 
     def check_file(self, filename):
         """Return (enough, needed_mm). needed_mm is None if unknown."""
@@ -382,7 +500,13 @@ class SpoolTracker:
             self.pending_file = None
             return self.orig_print_file(gcmd)
         filename = gcmd.get("FILENAME")
-        enough, needed = self.check_file(filename)
+        try:
+            enough, needed = self.check_file(filename)
+        except Exception:
+            # Fail open: a bug in the advisory check must never stop the
+            # user from printing. The real command still validates FILENAME.
+            logging.exception("spool_tracker: filament check failed")
+            enough, needed = True, None
         if enough:
             self.pending_file = None
             if needed is not None:
@@ -493,16 +617,28 @@ class SpoolTracker:
 
     cmd_SPOOL_LOAD_help = "Load a new spool. Without parameters asks on " \
         "screen. PERCENT=<0-100> MATERIAL=<PLA..> WEIGHT=<grams>"
+    @staticmethod
+    def _get_percent(gcmd, required):
+        if required:
+            percent = gcmd.get_float("PERCENT", minval=0., maxval=100.)
+        else:
+            percent = gcmd.get_float("PERCENT", None, minval=0., maxval=100.)
+        # Klipper's range check lets "nan" through (NaN compares false)
+        if percent is not None and not math.isfinite(percent):
+            raise gcmd.error("PERCENT must be a number from 0 to 100")
+        return percent
+
     def cmd_SPOOL_LOAD(self, gcmd):
-        percent = gcmd.get_float("PERCENT", None, minval=0., maxval=100.)
+        percent = self._get_percent(gcmd, required=False)
         material = gcmd.get("MATERIAL", None)
-        weight = gcmd.get_int("WEIGHT", None, minval=1)
+        weight = gcmd.get_int("WEIGHT", None, minval=1,
+                              maxval=MAX_SPOOL_WEIGHT)
         step = gcmd.get("STEP", "").lower()
         if material is not None:
             material = material.upper()
-            if material not in self.densities:
+            if material not in self.densities:   # allow-list
                 raise gcmd.error("Unknown material '%s'. Known: %s" % (
-                    material, ", ".join(self.densities)))
+                    clean_text(material, 16), ", ".join(self.densities)))
         if percent is None:
             self._prompt_percent()
             return
@@ -588,7 +724,7 @@ class SpoolTracker:
     def cmd_SPOOL_SET(self, gcmd):
         if not self.state["loaded"]:
             raise gcmd.error("No spool loaded. Use SPOOL_LOAD first.")
-        percent = gcmd.get_float("PERCENT", minval=0., maxval=100.)
+        percent = self._get_percent(gcmd, required=True)
         self.state["remaining_mm"] = self.state["capacity_mm"] * percent / 100.
         self.low_warned = False
         self._save_state()
